@@ -1,4 +1,4 @@
-Description: Template to deploy Drupal application on EFS using ECS Fargate
+Description: Template to deploy Drupal application on EFS using ECS Fargate - fork
 Metadata: 
   AWS::CloudFormation::Interface: 
     ParameterGroups: 
