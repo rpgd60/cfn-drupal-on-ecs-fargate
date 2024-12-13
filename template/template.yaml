@@ -49,7 +49,7 @@ Parameters:
     Default: drupalonefs
   Image:
     Type: String
-    Default: "drupal:8-apache"
+    Default: "drupal:latest" ## "drupal:8-apache"
     Description: Drupal Image for the ECS service. 
   MinCapacity:
     Description: Minimum Fargate tasks to run
@@ -99,8 +99,13 @@ Parameters:
     NoEcho: true
     Description: Please enter a password for the Aurora DB that will be created as part of this stack. 
     Type: String
+    Default:  Drupal.2024
     MinLength: 8
     MaxLength: 41
+  DBEngineVersion:
+    Type: String
+    Default: "8.0.mysql_aurora.3.05.2"
+    Description: The database engine version.
   MinimumAuroraCapacityUnit:
     Description: Minimum Aurora capacity unit
     Type: Number
@@ -108,7 +113,7 @@ Parameters:
   MaximumAuroraCapacityUnit:
     Description: Maximum Aurora capacity unit
     Type: Number
-    Default: 16    
+    Default: 16 
   PerformanceMode:
     Type: String
     AllowedValues: [ generalPurpose, maxIO ]
@@ -448,24 +453,56 @@ Resources:
           Description: "Provide DB access via port 3306"
       VpcId: !Ref VPC
 
-  DrupalDB:
+  # DrupalDB:
+  #   Type: AWS::RDS::DBCluster
+  #   Properties:
+  #     DatabaseName: drupal
+  #     DBClusterIdentifier: drupal-db-aurora-serverless
+  #     DBSubnetGroupName: !Ref DrupalDBSubnetGroupName
+  #     Engine: aurora-mysql
+  #     EngineMode: serverless
+  #     MasterUsername: !Ref DBAdminUsername
+  #     MasterUserPassword: !Ref DBPassword
+  #     StorageEncrypted: true
+  #     VpcSecurityGroupIds:
+  #       - !Ref DrupalDBSG
+  #     ScalingConfiguration:
+  #       AutoPause: true
+  #       MinCapacity: !Ref MinimumAuroraCapacityUnit
+  #       MaxCapacity: !Ref MaximumAuroraCapacityUnit
+  #       SecondsUntilAutoPause: 1000
+
+
+  DrupalDBv2:
     Type: AWS::RDS::DBCluster
     Properties:
-      DatabaseName: drupal
-      DBClusterIdentifier: drupal-db-aurora-serverless
-      DBSubnetGroupName: !Ref DrupalDBSubnetGroupName
       Engine: aurora-mysql
-      EngineMode: serverless
+      EngineVersion: !Ref DBEngineVersion
+      DatabaseName: drupal
       MasterUsername: !Ref DBAdminUsername
       MasterUserPassword: !Ref DBPassword
-      StorageEncrypted: true
-      VpcSecurityGroupIds:
+      DBClusterParameterGroupName: default.aurora-mysql8.0
+      VpcSecurityGroupIds: 
         - !Ref DrupalDBSG
-      ScalingConfiguration:
-        AutoPause: true
+      DBSubnetGroupName: !Ref DrupalDBSubnetGroupName
+      ServerlessV2ScalingConfiguration:
         MinCapacity: !Ref MinimumAuroraCapacityUnit
         MaxCapacity: !Ref MaximumAuroraCapacityUnit
-        SecondsUntilAutoPause: 1000
+
+  AuroraServerlessV2Instance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DrupalDBv2
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+
+  AuroraServerlessV2ReaderInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DrupalDBv2
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+      PromotionTier: 15
 
   #EFS Resources
   EFSSecurityGroup:
@@ -1025,5 +1062,5 @@ Outputs:
   DBEndpoint:
     Description: "DB endpoint"
     Value: 
-      !GetAtt DrupalDB.Endpoint.Address
+      !GetAtt DrupalDBv2.Endpoint.Address
 
