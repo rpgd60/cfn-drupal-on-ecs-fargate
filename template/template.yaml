@@ -46,7 +46,7 @@ Parameters:
   ClusterName:
     Type: String 
     Description: Name for Aurora Cluster DB and EFS. 
-    Default: drupalonefs
+    Default: drupal
   Image:
     Type: String
     Default: "drupal:latest" ## "drupal:8-apache"
@@ -209,7 +209,7 @@ Resources:
       LogDestinationType: s3
       ResourceId: !Ref VPC
       ResourceType: VPC
-      TrafficType: REJECT
+      TrafficType: ALL
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -776,7 +776,6 @@ Resources:
       BucketName: !Join
         - '-'
         - - !Ref ClusterName
-          - 'loadbalancer'
           - 'logs'
           - !Ref 'AWS::AccountId'
           - !Ref 'AWS::Region'
