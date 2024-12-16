@@ -1,0 +1,124 @@
+Description: Template to deploy S3 buckets for logs
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "ECS cluster Configuration"
+        Parameters: 
+          - ClusterName
+      - 
+        Label:
+          default: "Tagging Configuration"
+        Parameters:
+          - EnvironmentName
+
+Parameters:
+  ClusterName:
+    Type: String 
+    Description: Name for Aurora Cluster DB and EFS. Also used for S3 log bucket naming. 
+    Default: drupal
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: Test
+  LogBucketName:
+    Description: Name for Logs Bucket
+    Type: String
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      "elbAcc" : "127311923021"
+    us-east-2:
+      "elbAcc" : "033677994240"
+    us-west-1:
+      "elbAcc" : "027434742980"
+    us-west-2:
+      "elbAcc" : "797873946194"
+    af-south-1:
+      "elbAcc" : "098369216593"
+    ca-central-1:
+      "elbAcc" : "985666609251"
+    eu-central-1:
+      "elbAcc" : "054676820928"
+    eu-west-1:
+      "elbAcc" : "156460612806"
+    eu-west-2:
+      "elbAcc" : "652711504416"
+    eu-south-1:
+      "elbAcc" : "635631232127"
+    eu-west-3:
+      "elbAcc" : "009996457667"
+    eu-north-1:
+      "elbAcc" : "897822967062"
+    ap-east-1:
+      "elbAcc" : "754344448648"
+    ap-northeast-1:
+      "elbAcc" : "582318560864"
+    ap-northeast-2:
+      "elbAcc" : "600734575887"
+    ap-northeast-3:
+      "elbAcc" : "383597477331"
+    ap-southeast-1:
+      "elbAcc" : "114774131450"
+    ap-southeast-2:
+      "elbAcc" : "783225319266"
+    ap-south-1:
+      "elbAcc" : "718504428378"
+    me-south-1:
+      "elbAcc" : "076674570225"
+    sa-east-1:
+      "elbAcc" : "507241528517"
+    us-gov-west-1:
+      "elbAcc" : "048591011584"
+    us-gov-east-1:
+      "elbAcc" : "190560391635"
+    eu-south-2:
+      "elbAcc" : "000000000000"
+
+Conditions:
+  IsLegacyRegion: !Not [!Equals [!FindInMap [RegionMap, !Ref "AWS::Region", "elbAcc"], ""]]
+
+  
+Resources:
+
+  LogBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref LogBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+           - Value: environment
+             Key: !Ref EnvironmentName
+  
+  ALBLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              !If 
+                - IsLegacyRegion
+                - AWS: 
+                    Fn::Sub:
+                      - "arn:${AWS::Partition}:iam::${ELBAccount}:root"
+                      - ELBAccount: !FindInMap [RegionMap, !Ref "AWS::Region", elbAcc]
+                - Service: 
+                    - "logdelivery.elasticloadbalancing.amazonaws.com"
+            Action: s3:PutObject
+            Resource: !Sub "${LogBucket.Arn}/*"
+ 
+
+Outputs:
+  LogBucketName:
+    Description: Name of the Logs bucket
+    Value: !Ref LogBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-LogBucketName"

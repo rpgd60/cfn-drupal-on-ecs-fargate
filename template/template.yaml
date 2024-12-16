@@ -38,15 +38,18 @@ Metadata:
           - ThroughputMode
       - 
         Label:
-          default: "Tagging Configuration"
+          default: "Stacks and Labels"
         Parameters:
           - EnvironmentName
+          - InfraStackName
 
 Parameters:
   ClusterName:
     Type: String 
     Description: Name for Aurora Cluster DB and EFS. 
-    Default: drupal
+  LogBucketName:
+    Type: String
+    Description: Bucket for Logging
   Image:
     Type: String
     Default: "drupal:latest" ## "drupal:8-apache"
@@ -63,6 +66,9 @@ Parameters:
     Description: An environment name that is prefixed to resource names
     Type: String
     Default: Test
+  InfraStackName:
+    Description: The stack name of the infrastructure stack for referencing
+    Type: String
   VpcCIDR:
     Description: Please enter the IP range (CIDR notation) for this VPC
     Type: String
@@ -142,55 +148,56 @@ Conditions:
   IsProvisioned:
     !Equals [ !Ref ThroughputMode, provisioned ]
 
-Mappings:
-  RegionMap:
-    us-east-1:
-      "elbAcc" : "127311923021"
-    us-east-2:
-      "elbAcc" : "033677994240"
-    us-west-1:
-      "elbAcc" : "027434742980"
-    us-west-2:
-      "elbAcc" : "797873946194"
-    af-south-1:
-      "elbAcc" : "098369216593"
-    ca-central-1:
-      "elbAcc" : "985666609251"
-    eu-central-1:
-      "elbAcc" : "054676820928"
-    eu-west-1:
-      "elbAcc" : "156460612806"
-    eu-west-2:
-      "elbAcc" : "652711504416"
-    eu-south-1:
-      "elbAcc" : "635631232127"
-    eu-west-3:
-      "elbAcc" : "009996457667"
-    eu-north-1:
-      "elbAcc" : "897822967062"
-    ap-east-1:
-      "elbAcc" : "754344448648"
-    ap-northeast-1:
-      "elbAcc" : "582318560864"
-    ap-northeast-2:
-      "elbAcc" : "600734575887"
-    ap-northeast-3:
-      "elbAcc" : "383597477331"
-    ap-southeast-1:
-      "elbAcc" : "114774131450"
-    ap-southeast-2:
-      "elbAcc" : "783225319266"
-    ap-south-1:
-      "elbAcc" : "718504428378"
-    me-south-1:
-      "elbAcc" : "076674570225"
-    sa-east-1:
-      "elbAcc" : "507241528517"
-    us-gov-west-1:
-      "elbAcc" : "048591011584"
-    us-gov-east-1:
-      "elbAcc" : "190560391635"
-  
+# Mappings:
+#   RegionMap:
+#     us-east-1:
+#       "elbAcc" : "127311923021"
+#     us-east-2:
+#       "elbAcc" : "033677994240"
+#     us-west-1:
+#       "elbAcc" : "027434742980"
+#     us-west-2:
+#       "elbAcc" : "797873946194"
+#     af-south-1:
+#       "elbAcc" : "098369216593"
+#     ca-central-1:
+#       "elbAcc" : "985666609251"
+#     eu-central-1:
+#       "elbAcc" : "054676820928"
+#     eu-west-1:
+#       "elbAcc" : "156460612806"
+#     eu-west-2:
+#       "elbAcc" : "652711504416"
+#     eu-south-1:
+#       "elbAcc" : "635631232127"
+#     eu-west-3:
+#       "elbAcc" : "009996457667"
+#     eu-north-1:
+#       "elbAcc" : "897822967062"
+#     ap-east-1:
+#       "elbAcc" : "754344448648"
+#     ap-northeast-1:
+#       "elbAcc" : "582318560864"
+#     ap-northeast-2:
+#       "elbAcc" : "600734575887"
+#     ap-northeast-3:
+#       "elbAcc" : "383597477331"
+#     ap-southeast-1:
+#       "elbAcc" : "114774131450"
+#     ap-southeast-2:
+#       "elbAcc" : "783225319266"
+#     ap-south-1:
+#       "elbAcc" : "718504428378"
+#     me-south-1:
+#       "elbAcc" : "076674570225"
+#     sa-east-1:
+#       "elbAcc" : "507241528517"
+#     us-gov-west-1:
+#       "elbAcc" : "048591011584"
+#     us-gov-east-1:
+#       "elbAcc" : "190560391635"
+#     default:
+#       "elbAcc" : "000000000000"
 Resources:
   #VPC resources
   VPC:
@@ -201,21 +208,22 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Ref EnvironmentName
+          Value: !Sub ${ClusterName}-${EnvironmentName}
   vpcFlowLog:
     Type: AWS::EC2::FlowLog
     Properties:
-      LogDestination: !Join ['/',[!GetAtt loadbalancerLogBucket.Arn,vpcflowlogs]]
       LogDestinationType: s3
+      LogDestination: !Sub "arn:aws:s3:::${LogBucketName}/VpcFlowLogs/"
       ResourceId: !Ref VPC
       ResourceType: VPC
       TrafficType: ALL
+
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: !Ref EnvironmentName
+          Value: !Sub ${ClusterName}-${EnvironmentName}
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -232,7 +240,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+          Value: !Sub ${ClusterName}-${EnvironmentName}-pub1
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -243,7 +251,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
+          Value: !Sub ${ClusterName}-${EnvironmentName}-pub2
   
   PublicSubnet3:
     Type: AWS::EC2::Subnet
@@ -254,7 +262,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Public Subnet (AZ3)
+          Value: !Sub ${ClusterName}-${EnvironmentName}-pub3
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -265,7 +273,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
+          Value: !Sub ${ClusterName}-${EnvironmentName}-priv1
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -276,7 +284,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+          Value: !Sub ${ClusterName}-${EnvironmentName}-priv2
 
   PrivateSubnet3:
     Type: AWS::EC2::Subnet
@@ -287,8 +295,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub ${EnvironmentName} Private Subnet (AZ3)
-
+          Value: !Sub ${ClusterName}-${EnvironmentName}-priv3
 
   NatGateway1EIP:
     Type: AWS::EC2::EIP
@@ -770,58 +777,6 @@ Resources:
       Port: 80
       Protocol: HTTP
 
-  loadbalancerLogBucket:
-    Type: 'AWS::S3::Bucket'
-    Properties:
-      BucketName: !Join
-        - '-'
-        - - !Ref ClusterName
-          - 'logs'
-          - !Ref 'AWS::AccountId'
-          - !Ref 'AWS::Region'
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-  
-  loadbalancerLogBucketPolicy:
-    Type: 'AWS::S3::BucketPolicy'
-    Properties:
-      Bucket: !Ref loadbalancerLogBucket
-      PolicyDocument:
-        Statement:
-          - Action: 's3:PutObject'
-            Effect: 'Allow'
-            Resource: !Join
-              - ''
-              - - 'arn:aws:s3:::'
-                - !Ref loadbalancerLogBucket
-                - /*
-            Principal: 
-              AWS: !Join
-                - ''
-                - - 'arn:aws:iam::'
-                  - !FindInMap [RegionMap, !Ref "AWS::Region", elbAcc]
-                  - ':root'
-          - Action: 's3:PutObject'
-            Effect: 'Allow'
-            Resource: !Join
-              - ''
-              - - 'arn:aws:s3:::'
-                - !Ref loadbalancerLogBucket
-                - /*
-            Principal:
-              Service: delivery.logs.amazonaws.com
-          - Action: 's3:GetBucketAcl'
-            Effect: 'Allow'
-            Resource: !Join
-              - ''
-              - - 'arn:aws:s3:::'
-                - !Ref loadbalancerLogBucket
-            Principal:
-              Service: delivery.logs.amazonaws.com
-              
-
 
   loadbalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -831,7 +786,7 @@ Resources:
         - Key: access_logs.s3.enabled
           Value: "true"
         - Key: access_logs.s3.bucket
-          Value: !Ref loadbalancerLogBucket
+          Value: !Ref LogBucketName
       Scheme: internet-facing
       SecurityGroups:
         - !Ref albsecuritygroup
