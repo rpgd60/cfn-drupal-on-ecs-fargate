@@ -441,8 +441,4 @@ Outputs:
     Description: "ALB endpoint"
     Value: 
       !GetAtt loadbalancer.DNSName
-  # DBEndpoint:
-  #   Description: "DB endpoint"
-  #   Value: 
-  #     !GetAtt DrupalDBv2.Endpoint.Address
 
