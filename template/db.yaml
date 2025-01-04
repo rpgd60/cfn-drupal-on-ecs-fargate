@@ -1,0 +1,151 @@
+Description: Template to deploy DB
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "Amazon Aurora Serverless v2 MySQL DB Configuration"
+        Parameters: 
+          - DBAdminUsername
+          - DBPassword
+          - MinimumAuroraCapacityUnit
+          - MaximumAuroraCapacityUnit
+      - 
+        Label: 
+          default: "Supporting Stacks"
+        Parameters: 
+          - InfraStackName
+          - VpcStackName
+
+## DB Resources
+Parameters:
+  ProjectName:
+    Type: String 
+    Description: Name for Aurora Cluster DB and EFS. 
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: Test
+  InfraStackName:
+    Description: The stack name of the infrastructure stack for referencing
+    Type: String
+  VpcStackName:
+    Description: The stack name of the VPC and EFS stack for referencing
+    Type: String  
+  DBAdminUsername:
+    Description: Please enter a username for the Aurora DB that will be created as part of this stack. 
+    Type: String
+    Default: admin
+  DBPassword:
+    NoEcho: true
+    Description: Please enter a password for the Aurora DB that will be created as part of this stack. 
+    Type: String
+    Default:  Drupal.2024
+    MinLength: 8
+    MaxLength: 41
+  DBEngineVersion:
+    Type: String
+    Default: "8.0.mysql_aurora.3.05.2"
+    Description: The database engine version.
+  MinimumAuroraCapacityUnit:
+    Description: Minimum Aurora capacity unit
+    Type: Number
+    Default: 1
+  MaximumAuroraCapacityUnit:
+    Description: Maximum Aurora capacity unit
+    Type: Number
+    Default: 16 
+
+Resources:
+
+  ## ========================  Database Resources ========================
+  DrupalDBSubnetGroupName:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "${ProjectName}-${EnvironmentName}-SubnetGroupName"
+      SubnetIds:
+      ## Import from infra stack
+        - !ImportValue
+          Fn::Sub: "${VpcStackName}-PrivateSubnet1"
+        - !ImportValue
+          Fn::Sub: "${VpcStackName}-PrivateSubnet2"
+        # - !ImportValue
+        #   Fn::Sub: "${VpcStackName}-PrivateSubnet3"                    
+
+  DrupalDBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Enable DB access via port 3306"
+      GroupName: !Sub "${ProjectName}-${EnvironmentName}-DBSG"
+      SecurityGroupIngress:
+        - CidrIp: !ImportValue
+            Fn::Sub: "${VpcStackName}-VPCCIDR"
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          Description: "Provide DB access via port 3306"
+        - CidrIp: !ImportValue
+            Fn::Sub: "${VpcStackName}-VPCCIDR"
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          Description: "Provide DB access via port 3306"
+      VpcId: !ImportValue 
+        Fn::Sub: "${VpcStackName}-VPC"
+
+  DrupalDBv2:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: !Ref DBEngineVersion
+      # DatabaseName: !Sub "${ProjectName}-${EnvironmentName}-db"
+      DatabaseName: !Sub 
+        - "${CleanName}${EnvironmentName}db"
+        - CleanName: !Join
+            - ""
+            - !Split
+              - "-"
+              - !Join
+                - ""
+                - !Split
+                  - "_"
+                  - !Sub "${ProjectName}"
+      
+      MasterUsername: !Ref DBAdminUsername
+      MasterUserPassword: !Ref DBPassword
+      DBClusterParameterGroupName: default.aurora-mysql8.0
+      VpcSecurityGroupIds: 
+        - !Ref DrupalDBSG
+      DBSubnetGroupName: !Ref DrupalDBSubnetGroupName
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref MinimumAuroraCapacityUnit
+        MaxCapacity: !Ref MaximumAuroraCapacityUnit
+
+  AuroraServerlessV2Instance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DrupalDBv2
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+
+
+  AuroraServerlessV2ReaderInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DrupalDBv2
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+      PromotionTier: 15
+          
+## =============================== outputs =======================
+Outputs:
+  DbSecurityGroup:
+    Value: !Ref DrupalDBSG
+    Description: "DB Security Group"
+    Export:
+      Name: !Sub "${AWS::StackName}-DBSecurityGroup"
+  DbEndpoint:
+    Value:  !GetAtt DrupalDBv2.Endpoint.Address
+    Description: "Aurora DB Endpoint"
+    Export:
+      Name: !Sub "${AWS::StackName}-DbEndpoint"

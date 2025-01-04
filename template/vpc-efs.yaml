@@ -1,0 +1,605 @@
+Description: Template to deploy VPC and EFS
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "Network Configuration"
+        Parameters: 
+          - VpcCIDR
+      - 
+        Label: 
+          default: "ECS cluster Configuration"
+        Parameters: 
+          - ProjectName
+      - 
+        Label:
+          default: "Tagging Configuration"
+        Parameters:
+          - EnvironmentName
+      - 
+        Label: 
+          default: "EFS Configuration"
+        Parameters: 
+          - PerformanceMode
+          - EfsProvisionedThroughputInMibps
+          - ThroughputMode
+
+Parameters:
+  InfraStackName:
+    Description: The stack name of the infrastructure stack for referencing
+    Type: String
+  VpcCIDR:
+    Description: "IPv4 address range of the VPC in CIDR notation."
+    Type: String
+    Default: 10.192.0.0/16
+  ProjectName:
+    Type: String 
+    Description: Name for Aurora Cluster DB and EFS. Also used for S3 log bucket naming. 
+    Default: drupal
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: Test
+  LogBucketName:
+    Description: Name for Logs Bucket
+    Type: String
+
+
+  PerformanceMode:
+    Type: String
+    AllowedValues: [ generalPurpose, maxIO ]
+    Default: generalPurpose
+  EfsProvisionedThroughputInMibps:
+    Type: Number
+    MinValue: 0
+    MaxValue: 1024
+    Default: 0
+  ThroughputMode:
+    Type: String
+    AllowedValues: [ bursting, provisioned ]
+    Default: bursting
+Rules:
+  ProvisionedThroughput:
+    RuleCondition: !Equals [ !Ref ThroughputMode, provisioned ]
+    Assertions:
+      - Assert: !Not [ !Equals [ '0', !Ref EfsProvisionedThroughputInMibps ] ]
+        AssertDescription: "EfsProvisionedThroughputInMibps must be greater than 0 when ThroughputMode is provisioned"
+  BurstingThroughput:
+    RuleCondition: !Equals [ !Ref ThroughputMode, bursting ]
+    Assertions:
+      - Assert:  !Equals [ '0', !Ref EfsProvisionedThroughputInMibps ]
+        AssertDescription: "EfsProvisionedThroughputInMibps must be 0 when ThroughputMode is bursting"
+Conditions:
+  IsProvisioned:
+    !Equals [ !Ref ThroughputMode, provisioned ]
+
+# Mappings:
+#   RegionMap:
+#     us-east-1:
+#       "elbAcc" : "127311923021"
+#     us-east-2:
+#       "elbAcc" : "033677994240"
+#     us-west-1:
+#       "elbAcc" : "027434742980"
+#     us-west-2:
+#       "elbAcc" : "797873946194"
+#     af-south-1:
+#       "elbAcc" : "098369216593"
+#     ca-central-1:
+#       "elbAcc" : "985666609251"
+#     eu-central-1:
+#       "elbAcc" : "054676820928"
+#     eu-west-1:
+#       "elbAcc" : "156460612806"
+#     eu-west-2:
+#       "elbAcc" : "652711504416"
+#     eu-south-1:
+#       "elbAcc" : "635631232127"
+#     eu-west-3:
+#       "elbAcc" : "009996457667"
+#     eu-north-1:
+#       "elbAcc" : "897822967062"
+#     ap-east-1:
+#       "elbAcc" : "754344448648"
+#     ap-northeast-1:
+#       "elbAcc" : "582318560864"
+#     ap-northeast-2:
+#       "elbAcc" : "600734575887"
+#     ap-northeast-3:
+#       "elbAcc" : "383597477331"
+#     ap-southeast-1:
+#       "elbAcc" : "114774131450"
+#     ap-southeast-2:
+#       "elbAcc" : "783225319266"
+#     ap-south-1:
+#       "elbAcc" : "718504428378"
+#     me-south-1:
+#       "elbAcc" : "076674570225"
+#     sa-east-1:
+#       "elbAcc" : "507241528517"
+#     us-gov-west-1:
+#       "elbAcc" : "048591011584"
+#     us-gov-east-1:
+#       "elbAcc" : "190560391635"
+#     eu-south-2:
+#       "elbAcc" : "000000000000"
+
+# Conditions:
+#   IsLegacyRegion: !Not [!Equals [!FindInMap [RegionMap, !Ref "AWS::Region", "elbAcc"], ""]]
+
+  
+Resources:
+ #VPC resources
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}
+
+  # vpcFlowLog:
+  #   Type: AWS::EC2::FlowLog
+  #   DependsOn:
+  #        - LogBucketPolicy
+  #   Properties:
+  #     LogDestinationType: s3
+  #     # LogDestination: !Sub "arn:aws:s3:::${LogBucketName}/VpcFlowLogs/"
+  #     LogDestination: !Sub "${LogBucket.Arn}/VpcFlowLogs"
+  #     ResourceId: !Ref VPC
+  #     ResourceType: VPC
+  #     TrafficType: ALL
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Select [ 0, !Cidr [ !GetAtt VPC.CidrBlock, 256, 8 ] ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-pub1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Select [ 1, !Cidr [ !GetAtt VPC.CidrBlock, 256, 8 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-pub2
+  
+  # PublicSubnet3:
+  #   Type: AWS::EC2::Subnet
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     AvailabilityZone: !Select [ 2, !GetAZs  '' ]
+  #     CidrBlock: !Select [ 2, !Cidr [ !GetAtt VPC.CidrBlock, 256, 8 ]]
+  #     MapPublicIpOnLaunch: false
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub ${ProjectName}-${EnvironmentName}-pub3
+
+  ## Use /23 for private subnets 
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Select [ 2, !Cidr [ !GetAtt VPC.CidrBlock, 128, 9 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-priv1
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Select [ 3, !Cidr [ !GetAtt VPC.CidrBlock, 128, 9 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-priv2
+
+  # PrivateSubnet3:
+  #   Type: AWS::EC2::Subnet
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     AvailabilityZone: !Select [ 2, !GetAZs  '' ]
+  #     CidrBlock: !Select [ 4, !Cidr [ !GetAtt VPC.CidrBlock, 128, 9 ]]
+  #     MapPublicIpOnLaunch: false
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub ${ProjectName}-${EnvironmentName}-priv3
+
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  
+  # NatGateway3EIP:
+  #   Type: AWS::EC2::EIP
+  #   DependsOn: InternetGatewayAttachment
+  #   Properties:
+  #     Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  # NatGateway3:
+  #   Type: AWS::EC2::NatGateway
+  #   Properties:
+  #     AllocationId: !GetAtt NatGateway3EIP.AllocationId
+  #     SubnetId: !Ref PublicSubnet3
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # PublicSubnet3RouteTableAssociation:
+  #   Type: AWS::EC2::SubnetRouteTableAssociation
+  #   Properties:
+  #     RouteTableId: !Ref PublicRouteTable
+  #     SubnetId: !Ref PublicSubnet3
+
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+  
+  # PrivateRouteTable3:
+  #   Type: AWS::EC2::RouteTable
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub ${EnvironmentName} Private Routes (AZ3)
+
+  # DefaultPrivateRoute3:
+  #   Type: AWS::EC2::Route
+  #   Properties:
+  #     RouteTableId: !Ref PrivateRouteTable3
+  #     DestinationCidrBlock: 0.0.0.0/0
+  #     NatGatewayId: !Ref NatGateway3
+
+  # PrivateSubnet3RouteTableAssociation:
+  #   Type: AWS::EC2::SubnetRouteTableAssociation
+  #   Properties:
+  #     RouteTableId: !Ref PrivateRouteTable3
+  #     SubnetId: !Ref PrivateSubnet3
+
+  # ==================================== EFS Resources ====================================
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Enable EFS access via port 2049"
+      #GroupName: "Drupal EFS SG"
+      SecurityGroupIngress:
+        - CidrIp: !GetAtt VPC.CidrBlock
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          Description: "For enabling EFS access"
+      SecurityGroupEgress:
+        - CidrIp: !GetAtt VPC.CidrBlock
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          Description: "For enabling EFS access"
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-EFS-SG
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: !Ref PerformanceMode
+      FileSystemPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - elasticfilesystem:ClientMount
+              - elasticfilesystem:ClientRootAccess
+              - elasticfilesystem:ClientWrite
+            Principal:
+              AWS: !ImportValue 
+                Fn::Sub: "${InfraStackName}-ECSTaskRoleArn"
+          - Effect: "Allow"
+            Action:
+              - elasticfilesystem:ClientMount
+              - elasticfilesystem:ClientRootAccess
+              - elasticfilesystem:ClientWrite
+            Principal:
+              AWS: !ImportValue 
+                Fn::Sub: "${InfraStackName}-EC2RoleArn"
+      ProvisionedThroughputInMibps: !If [ IsProvisioned, !Ref EfsProvisionedThroughputInMibps, !Ref 'AWS::NoValue' ]
+      ThroughputMode: !Ref ThroughputMode
+      FileSystemTags:
+        - Key: Name
+          Value: !Ref ProjectName
+  MountTargetPrivateSubnet1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Ref PrivateSubnet1
+  MountTargetPrivateSubnet2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups: [ !Ref EFSSecurityGroup ]
+      SubnetId: !Ref PrivateSubnet2
+  # MountTargetPrivateSubnet3:
+  #   Type: AWS::EFS::MountTarget
+  #   Properties:
+  #     FileSystemId: !Ref EFSFileSystem
+  #     SecurityGroups: [ !Ref EFSSecurityGroup ]
+  #     SubnetId: !Ref PrivateSubnet3
+
+  AccessPointSites:
+    Type: 'AWS::EFS::AccessPoint'
+    Properties:
+      AccessPointTags: 
+        - Key: "Name"
+          Value: "sites"
+      FileSystemId: !Ref EFSFileSystem
+      PosixUser:
+        Uid: "33"
+        Gid: "33"
+      RootDirectory:
+        CreationInfo:
+          OwnerGid: "33"
+          OwnerUid: "33"
+          Permissions: "0755"
+        Path: "/sites"  
+  AccessPointModules:
+      Type: 'AWS::EFS::AccessPoint'
+      Properties:
+        AccessPointTags: 
+          - Key: "Name"
+            Value: "modules"    
+        FileSystemId: !Ref EFSFileSystem
+        PosixUser:
+          Uid: "33"
+          Gid: "33"
+        RootDirectory:
+          CreationInfo:
+            OwnerGid: "33"
+            OwnerUid: "33"
+            Permissions: "0755"
+          Path: "/modules"  
+  AccessPointThemes:
+      Type: 'AWS::EFS::AccessPoint'
+      Properties:
+        AccessPointTags: 
+          - Key: "Name"
+            Value: "themes"   
+        FileSystemId: !Ref EFSFileSystem
+        PosixUser:
+          Uid: "33"
+          Gid: "33"
+        RootDirectory:
+          CreationInfo:
+            OwnerGid: "33"
+            OwnerUid: "33"
+            Permissions: "0755"
+          Path: "/themes"  
+  AccessPointProfiles:
+      Type: 'AWS::EFS::AccessPoint'
+      Properties:
+        AccessPointTags: 
+          - Key: "Name"
+            Value: "profiles"     
+        FileSystemId: !Ref EFSFileSystem
+        PosixUser:
+          Uid: "33"
+          Gid: "33"        
+        RootDirectory:
+          CreationInfo:
+            OwnerGid: "33"
+            OwnerUid: "33"
+            Permissions: "0755"
+          Path: "/profiles"   
+
+
+# ============================== Outputs ===========================
+Outputs:
+  ## Export VPC Id
+  VPCId:
+    Description: VPC for cluster
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPC"
+
+  ## Export VPC CIDR
+  VPCCIDR:
+    Description: VPC CIDR
+    Value: !Ref VpcCIDR
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCCIDR"
+
+  ## Export public subnet2
+  PublicSubnet1:
+    Description: Public subnet 1 in AZ 1
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet1"
+  PublicSubnet2:
+    Description: Public subnet 2 in AZ 2
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet2"  
+  # PublicSubnet3:
+  #   Description: Public subnet 3 in AZ 3
+  #   Value: !Ref PublicSubnet3
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-PublicSubnet3"
+
+  ## Export private subnets
+  PrivateSubnet1:
+    Description: Private subnet 1 in AZ 1
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1"
+  PrivateSubnet2:
+    Description: Private subnet 2 in AZ 2
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2"
+  # PrivateSubnet3:
+  #   Description: Private subnet 3 in AZ 3
+  #   Value: !Ref PrivateSubnet3
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-PrivateSubnet3"
+
+## =============================== EFS Outputs =======================
+  EfsFileSystemId:
+    Value: !Ref EFSFileSystem
+    Description: "EFS File system ID"
+    Export:
+      Name: !Sub "${AWS::StackName}-EFSFileSystem"
+  EfsSecurityGroup:
+    Value: !Ref EFSSecurityGroup
+    Description: "EFS Security Group"
+    Export:
+      Name: !Sub "${AWS::StackName}-EFSSecurityGroup"
+  AccessPointSites:
+    Value: !Ref AccessPointSites
+    Description: "EFS Access Point for /sites"
+    Export:
+      Name: !Sub "${AWS::StackName}-AccessPointSites"
+  AccessPointModules:
+    Value: !Ref AccessPointModules
+    Description: "EFS Access Point for /modules"
+    Export:
+      Name: !Sub "${AWS::StackName}-AccessPointModules"
+  AccessPointThemes:
+    Value: !Ref AccessPointThemes
+    Description: "EFS Access Point for /themes"
+    Export:
+      Name: !Sub "${AWS::StackName}-AccessPointThemes"
+  AccessPointProfiles:
+    Value: !Ref AccessPointProfiles
+    Description: "EFS Access Point for /profiles"
+    Export:
+      Name: !Sub "${AWS::StackName}-AccessPointProfiles"
+  FstabEntrySites:
+    Value: !Sub "${EFSFileSystem}:/ /var/www/html/sites efs _netdev,tls,accesspoint=${AccessPointSites} 0 0"  
+    Description: "/etc/fstab entry for  /sites"
+    Export:
+      Name: !Sub "${AWS::StackName}-FstabSites"
+  FstabEntryModules:
+    Value: !Sub "${EFSFileSystem}:/ /var/www/html/modules efs _netdev,tls,accesspoint=${AccessPointModules} 0 0"  
+    Description: "/etc/fstab entry for  /modules"
+    Export:
+      Name: !Sub "${AWS::StackName}-FstabModules"
+  FstabEntryThemes:
+    Value: !Sub "${EFSFileSystem}:/ /var/www/html/themes efs _netdev,tls,accesspoint=${AccessPointThemes} 0 0"  
+    Description: "/etc/fstab entry for  /themes"
+    Export:
+      Name: !Sub "${AWS::StackName}-FstabThemes"
+  FstabEntryProfiles:
+    Value: !Sub "${EFSFileSystem}:/ /var/www/html/modules efs _netdev,tls,accesspoint=${AccessPointProfiles} 0 0"  
+    Description: "/etc/fstab entry for  /profiles"
+    Export:
+      Name: !Sub "${AWS::StackName}-FstabProfiles"  

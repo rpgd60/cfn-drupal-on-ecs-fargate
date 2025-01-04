@@ -1,0 +1,448 @@
+Description: Template to deploy Drupal application on EFS using ECS Fargate - fork
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      # - 
+      #   Label: 
+      #     default: "Network Configuration"
+      #   Parameters: 
+      #     - VpcCIDR
+      - 
+        Label: 
+          default: "ECS cluster Configuration"
+        Parameters: 
+          - ProjectName
+          - Image
+          - MinCapacity
+          - MaxCapacity
+      # - 
+      #   Label: 
+      #     default: "Amazon Aurora Serverless MySQL DB Configuration"
+      #   Parameters: 
+      #     - DBAdminUsername
+      #     - DBPassword
+      #     - MinimumAuroraCapacityUnit
+      #     - MaximumAuroraCapacityUnit
+      # - 
+      #   Label: 
+      #     default: "EFS Configuration"
+      #   Parameters: 
+      #     - PerformanceMode
+      #     - EfsProvisionedThroughputInMibps
+      #     - ThroughputMode
+      - 
+        Label:
+          default: "Stacks and Labels"
+        Parameters:
+          - EnvironmentName
+          - InfraStackName
+          - DbEcsStackName
+
+Parameters:
+  ProjectName:
+    Type: String 
+    Description: Name for Aurora Cluster DB and EFS. 
+  LogBucketName:
+    Type: String
+    Description: Bucket for Logging
+  Image:
+    Type: String
+    Default: "drupal:latest" ## "drupal:8-apache"
+    Description: Drupal Image for the ECS service. 
+  MinCapacity:
+    Description: Minimum Fargate tasks to run
+    Type: Number
+    Default: 1
+  MaxCapacity:
+    Description: Maximum Fargate tasks to scale
+    Type: Number
+    Default: 5
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: Test
+  InfraStackName:
+    Description: The stack name of the infrastructure stack for referencing
+    Type: String
+  VpcStackName:
+    Description: The stack name of the VPC and EFS stack for referencing
+    Type: String
+
+
+Resources:
+                                       
+  #ECS Resources
+  cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Join ['-', [!Ref ProjectName, Cluster]] 
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      #RoleName: !Join ['-', [!Ref ProjectName, ExecutionRole]]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+        
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinCapacity
+      MaxCapacity: !Ref MaxCapacity
+      ResourceId: !Join ['/', [service, !Ref cluster, !GetAtt service.Name]]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !ImportValue 
+        Fn::Sub: "${InfraStackName}-AutoScalingRoleArn"
+      
+  AutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Join ['', [!Ref ProjectName, AutoScalingPolicy]]
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 10
+        ScaleOutCooldown: 10
+        # Keep things at or lower than 50% CPU utilization, for example
+        TargetValue: 75
+
+  service:
+    Type: AWS::ECS::Service
+    DependsOn: 
+    - listener
+    Properties:
+      ServiceName: !Join ['-',[!Ref ProjectName, service]]
+      Cluster: !Ref cluster
+      TaskDefinition: !Ref taskdefinition
+      EnableExecuteCommand: true
+      DeploymentConfiguration:
+          MinimumHealthyPercent: 100
+          MaximumPercent: 200
+      DesiredCount: !Ref MinCapacity
+      LaunchType: FARGATE
+      NetworkConfiguration: 
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !ImportValue 
+              Fn::Sub: "${VpcStackName}-PrivateSubnet1"
+            - !ImportValue 
+              Fn::Sub: "${VpcStackName}-PrivateSubnet2"
+            # - !ImportValue 
+            #   Fn::Sub: "${VpcStackName}-PrivateSubnet3"          
+          SecurityGroups:
+            - !Ref containersecuritygroup
+
+      LoadBalancers:
+        - ContainerName: "drupal"
+          ContainerPort: 80
+          TargetGroupArn: !Ref targetgroup
+    
+  targetgroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: loadbalancer
+    Properties:
+      TargetGroupAttributes:
+      - Key: stickiness.enabled
+        Value: "true"
+      - Key: stickiness.type
+        Value: lb_cookie 
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /
+      HealthCheckTimeoutSeconds: 30
+      UnhealthyThresholdCount: 5
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200,302"
+      Name: !Join ['-', [!Ref ProjectName, TargetGroup]]
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: 
+        !ImportValue 
+          Fn::Sub: "${VpcStackName}-VPC"
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref ProjectName, TargetGroup]]
+  listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref targetgroup
+          Type: forward
+      LoadBalancerArn: !Ref loadbalancer
+      Port: 80
+      Protocol: HTTP
+
+
+  loadbalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      #Name: !Join ['-', [!Ref ProjectName, LoadBalancer]]
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: "true"
+        - Key: access_logs.s3.bucket
+          Value: !Ref LogBucketName
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref albsecuritygroup
+      Subnets:
+      ## use imports from Infra stack
+        - !ImportValue 
+            Fn::Sub: "${VpcStackName}-PublicSubnet1"
+        - !ImportValue 
+            Fn::Sub: "${VpcStackName}-PublicSubnet2"
+        # - !ImportValue 
+        #     Fn::Sub: "${VpcStackName}-PublicSubnet3"
+
+  containersecuritygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join ['-', [!Ref ProjectName, ContainerSecurityGroup]]
+      VpcId: 
+      ## use import from infra stack
+        !ImportValue 
+          Fn::Sub: "${VpcStackName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref albsecuritygroup
+          Description: "Container security group Ingress rule"
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          Description: "Container security group Egress rule"
+  
+  containersecuritygroupEgressRuleEFS:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties: 
+      CidrIp: !ImportValue
+        Fn::Sub: "${VpcStackName}-VPCCIDR"
+      Description: Container security group egress rule to access the EFS resources. 
+      FromPort: 2049
+      IpProtocol: tcp
+      ToPort: 2049
+      GroupId: !Ref containersecuritygroup
+  containersecuritygroupEgressRuleAurora:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties: 
+      CidrIp: !ImportValue
+        Fn::Sub: "${VpcStackName}-VPCCIDR"
+
+      Description: Container security group egress rule to access the EFS resources. 
+      FromPort: 3306
+      IpProtocol: tcp
+      ToPort: 3306
+      GroupId: !Ref containersecuritygroup
+
+
+
+
+  albsecuritygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Join ['-', [!Ref ProjectName, LoadBalancerSecurityGroup]]
+      # Use vpc id from infra stack
+      VpcId: !ImportValue 
+          Fn::Sub: "${VpcStackName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: "ALB security group Ingress rule"
+      SecurityGroupEgress:
+        - CidrIp: !ImportValue
+            Fn::Sub: "${VpcStackName}-VPCCIDR"
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          Description: "ALB security group Egress"
+
+  # loggroupKmskey:
+  #   Type: AWS::KMS::Key
+  #   Properties: 
+  #     Description: KMS key to encrypt the CloudWatch LogGroup
+  #     Enabled: true
+  #     EnableKeyRotation: true
+  #     KeyPolicy:
+  #       Version: '2012-10-17'
+  #       Id: key-default-1
+  #       Statement:
+  #       - Sid: Enable IAM User Permissions
+  #         Effect: Allow
+  #         Principal:
+  #           AWS: !Join ['',['arn:aws:iam::',!Ref AWS::AccountId,':root']]
+  #         Action: kms:*
+  #         Resource: '*'
+  #       - Sid: Enabled CloudWatch to access KMS
+  #         Effect: Allow
+  #         Principal:
+  #           Service: !Join ['',['logs.',!Ref AWS::Region,'.amazonaws.com']]
+  #         Action:
+  #           - kms:Encrypt*
+  #           - kms:Decrypt*
+  #           - kms:ReEncrypt*
+  #           - kms:GenerateDataKey*
+  #           - kms:Describe*
+  #         Resource: '*'
+  #       - Sid: Allow ELB logs to be sent to S3
+  #         Effect: Allow
+  #         Principal:
+  #           Service: delivery.logs.amazonaws.com
+  #         Action:
+  #           - kms:Encrypt*
+  #           - kms:Decrypt*
+  #           - kms:ReEncrypt*
+  #           - kms:GenerateDataKey*
+  #           - kms:Describe*
+  #         Resource: '*'
+
+  #     #KeySpec: String
+  #     #KeyUsage: String
+  #     PendingWindowInDays: 7
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/ecs/, !Ref ProjectName, taskdefinition]]
+      RetentionInDays: 30
+      # KmsKeyId: !GetAtt loggroupKmskey.Arn
+
+  taskdefinition: 
+    Type: AWS::ECS::TaskDefinition
+    Properties: 
+      RequiresCompatibilities:
+        - "EC2"
+        - "FARGATE"
+      Family: !Join ["-",[!Ref ProjectName,td]]
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !ImportValue
+            Fn::Sub: "${InfraStackName}-ECSTaskRoleArn"
+      ContainerDefinitions:
+        -
+          EntryPoint:
+            - "sh"
+            - "-c"
+            - "cp -prR /var/www/html/sites/* /mnt"
+          Essential: false
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+          MountPoints:
+            - 
+              ContainerPath: "/mnt"
+              SourceVolume: "sites"
+          Name: "initcontainer"
+        -
+          DependsOn:
+            -
+              Condition: "COMPLETE"
+              ContainerName: "initcontainer"
+          Essential: true
+          Image: !Ref Image
+          MountPoints:
+            -
+              ContainerPath: "/var/www/html/modules/"
+              SourceVolume: "modules"
+            
+            - 
+              ContainerPath: "/var/www/html/sites/"
+              SourceVolume: "sites"
+
+            - 
+              ContainerPath: "/var/www/html/profiles/"
+              SourceVolume: "profiles"
+
+            - 
+              ContainerPath: "/var/www/html/themes/"
+              SourceVolume: "themes"
+          Name: "drupal"
+          PortMappings:
+            -
+              ContainerPort: 80
+              HostPort: 80
+              Protocol: tcp
+
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      Volumes:
+        - 
+          Name: themes
+          EFSVolumeConfiguration:
+            FilesystemId: !ImportValue 
+              Fn::Sub: "${VpcStackName}-EFSFileSystem"
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !ImportValue 
+                Fn::Sub: "${VpcStackName}-AccessPointThemes"
+            TransitEncryption: ENABLED
+            RootDirectory: "/"
+        -
+          Name: profiles
+          EFSVolumeConfiguration:
+            FilesystemId: !ImportValue 
+              Fn::Sub: "${VpcStackName}-EFSFileSystem"
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !ImportValue 
+                Fn::Sub: "${VpcStackName}-AccessPointProfiles"
+            TransitEncryption: ENABLED
+            RootDirectory: "/"
+        -
+          Name: sites
+          EFSVolumeConfiguration:
+            FilesystemId: !ImportValue 
+              Fn::Sub: "${VpcStackName}-EFSFileSystem"
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !ImportValue 
+                Fn::Sub: "${VpcStackName}-AccessPointSites"
+            TransitEncryption: ENABLED
+            RootDirectory: "/"
+        -
+          Name: modules
+          EFSVolumeConfiguration:
+            FilesystemId: !ImportValue 
+              Fn::Sub: "${VpcStackName}-EFSFileSystem"
+            AuthorizationConfig:
+              IAM: ENABLED
+              AccessPointId: !ImportValue 
+                Fn::Sub: "${VpcStackName}-AccessPointModules"
+            TransitEncryption: ENABLED
+            RootDirectory: "/"
+
+
+
+
+Outputs:
+  ALBEndpoint:
+    Description: "ALB endpoint"
+    Value: 
+      !GetAtt loadbalancer.DNSName
+  # DBEndpoint:
+  #   Description: "DB endpoint"
+  #   Value: 
+  #     !GetAtt DrupalDBv2.Endpoint.Address
+

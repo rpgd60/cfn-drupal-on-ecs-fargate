@@ -1,0 +1,205 @@
+Parameters:
+  InfraStackName:
+    Type: String
+    Description: Name of the infrastructure stack that contains shared resources
+  VpcStackName:
+    Type: String
+    Description: Name of the VPC and EFS Stack
+  DbStackName:
+    Type: String
+    Description: Name of the DB stack
+  CreateAL2023:
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+    Description: Whether to create an Amazon Linux 2023 instance
+
+  CreateUbuntu2204:
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+    Description: Whether to create an Ubuntu 22.04 instance
+
+  CreateUbuntu2404:
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+    Description: Whether to create an Ubuntu 24.04 instance
+
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t4g.small
+    Description: Instance type for ARM architecture
+
+  LatestAmiAmazonLinux2023:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+  ## https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-is-now-available-on-aws/44542
+  LatestArmAmiUbuntu2404:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+
+  LatestArmAmiUbuntu2204:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id'
+
+Conditions:
+  CreateAL2023Instance: !Equals [!Ref CreateAL2023, true]
+  CreateUbuntu2204Instance: !Equals [!Ref CreateUbuntu2204, true]
+  CreateUbuntu2404Instance: !Equals [!Ref CreateUbuntu2404, true]
+
+Resources:
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instance
+      VpcId: 
+        Fn::ImportValue:
+          !Sub "${VpcStackName}-VPC"
+      SecurityGroupEgress:
+      ## Port 80 apparently required for Ubuntu apt-get to repos in AWS
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS outbound
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS outbound
+          ## Todo - point to EFS SG
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 
+            Fn::ImportValue:
+              !Sub "${VpcStackName}-VPCCIDR"
+          Description: Allow EFS to VPC
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 
+            ## Todo: point to DB SG
+            Fn::ImportValue:
+              !Sub "${VpcStackName}-VPCCIDR"
+          Description: Allow MySQL to VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2SecurityGroup"
+
+  AmazonLinux2023Instance:
+    Type: AWS::EC2::Instance
+    Condition: CreateAL2023Instance
+    Metadata:
+      EfsAccessPointModules: !ImportValue 
+        'Fn::Sub': '${VpcStackName}-AccessPointModules'
+    Properties:
+      IamInstanceProfile: 
+        Fn::ImportValue: 
+          !Sub "${InfraStackName}-EC2InstanceProfile"
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiAmazonLinux2023
+      ## Request public IP
+      NetworkInterfaces:
+        - DeleteOnTermination: true
+          Description: EC2 public IP
+          DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: 
+            Fn::ImportValue:
+              !Sub "${VpcStackName}-PublicSubnet2"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      UserData: 
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            # Install EFS utilities
+            dnf install -y amazon-efs-utils
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-amzl2023"
+
+  Ubuntu2204Instance:
+    Type: AWS::EC2::Instance
+    Condition: CreateUbuntu2204Instance
+    Properties:
+      IamInstanceProfile: 
+        Fn::ImportValue: 
+          !Sub "${InfraStackName}-EC2InstanceProfile"
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestArmAmiUbuntu2204
+      ## Request public IP
+      NetworkInterfaces:
+        - DeleteOnTermination: true
+          Description: EC2 public IP
+          DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: 
+            Fn::ImportValue:
+              !Sub "${VpcStackName}-PublicSubnet1"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      UserData:
+        ## TODO: Modify to simple apt-get install once EFS utils supported for Ubuntu 24.04
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y nfs-common
+          apt-get install -y git binutils
+          apt-get install -y python3-pip
+          apt-get install -y build-essential
+          git clone https://github.com/aws/efs-utils
+          cd efs-utils
+          ./build-deb.sh
+          apt-get install -y ./build/amazon-efs-utils*deb
+      Tags:
+        - Key: Name
+          Value: !Sub "ubuntu2204-${AWS::StackName}"
+  
+  Ubuntu2404Instance:
+    Type: AWS::EC2::Instance
+    Condition: CreateUbuntu2404Instance
+    Properties:
+      IamInstanceProfile: 
+        Fn::ImportValue: 
+          !Sub "${InfraStackName}-EC2InstanceProfile"
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestArmAmiUbuntu2404
+      ## Request public IP
+      NetworkInterfaces:
+        - DeleteOnTermination: true
+          Description: EC2 public IP
+          DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: 
+            Fn::ImportValue:
+              !Sub "${VpcStackName}-PublicSubnet1"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      UserData:
+        ## TODO: Modify to simple apt-get install once EFS utils supported for Ubuntu 24.04
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y nfs-common
+          apt-get install -y git binutils
+          apt-get install -y python3-pip
+          apt-get install -y build-essential
+          git clone https://github.com/aws/efs-utils
+          cd efs-utils
+          ./build-deb.sh
+          apt-get install -y ./build/amazon-efs-utils*deb
+      Tags:
+        - Key: Name
+          Value: !Sub "ubuntu2204-${AWS::StackName}"
+
